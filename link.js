@@ -405,6 +405,30 @@
     try { ws && ws.close(); } catch {}
   }
 
+  // A hint under the microphone: the phone must stay unlocked for the microphone to work.
+  const LOCK = {
+    en: 'Keep the screen unlocked: the microphone only works while the screen is on.',
+    ja: '画面をロックしないでください。マイクは画面がオンのときだけ使えます。',
+    zh: '请不要锁屏：只有屏幕亮着时麦克风才能工作。',
+    ko: '화면을 잠그지 마세요. 화면이 켜져 있을 때만 마이크가 작동합니다.',
+    uk: 'Не блокуй екран — мікрофон працює тільки з увімкненим екраном.',
+    es: 'No bloquees la pantalla: el micrófono solo funciona con la pantalla encendida.',
+    ru: 'Не блокируй экран — микрофон работает только при включённом экране.'
+  }[browser] || 'Keep the screen unlocked: the microphone only works while the screen is on.';
+  const lockHint = document.createElement('div');
+  lockHint.textContent = '🔓 ' + LOCK;
+  lockHint.style.cssText = 'font-size:13px;color:var(--muted);text-align:center;line-height:1.35';
+  mic.insertAdjacentElement('afterend', lockHint);
+
+  // The screen stays on; after a minute without a touch it dims by 20% (a dark layer saves battery on OLED screens).
+  const dim = document.createElement('div');
+  dim.style.cssText = 'position:fixed;inset:0;z-index:20;background:#000;opacity:0;pointer-events:none;transition:opacity 4s ease';
+  document.body.append(dim);
+  let dimTimer = null;
+  function wake() { dim.style.transition = 'opacity .3s ease'; dim.style.opacity = '0'; clearTimeout(dimTimer); dimTimer = setTimeout(() => { dim.style.transition = 'opacity 4s ease'; dim.style.opacity = '0.2'; }, 60000); }
+  ['pointerdown', 'keydown', 'touchstart'].forEach(ev => document.addEventListener(ev, wake, { passive: true }));
+  wake();
+
   window.addEventListener('pagehide', () => send({ kind: 'bye' }));
   connect();
 })();
