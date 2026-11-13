@@ -297,7 +297,7 @@
     try {
       if (!stream) stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
     } catch (err) { handsFree = false; micLabel(); why('mic: ' + (err && err.name || 'denied')); return; }
-    if (!handsFree || speaking) return;
+    if (!handsFree || speaking) { releaseMic(); return; }
     if (!audioCtx) {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       analyser = audioCtx.createAnalyser(); analyser.fftSize = 1024;
@@ -316,7 +316,7 @@
       analyser.getFloatTimeDomainData(buf);
       let sum = 0; for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
       const now = Date.now();
-      if (Math.sqrt(sum / buf.length) > 0.02) { spoke = true; lastLoud = now; live.textContent = '🎤 …'; }
+      if (Math.sqrt(sum / buf.length) > 0.03) { spoke = true; lastLoud = now; live.textContent = '🎤 …'; }
       if ((spoke && now - lastLoud >= PAUSE) || now - begun >= 30000 || (!spoke && now - begun >= FIRST_WORDS)) stopRecording();
     }, 150);
   }
@@ -326,6 +326,14 @@
     recording = false; clearInterval(levelTimer); quietStop = !!quiet;
     live.textContent = '';
     try { recorder.stop(); } catch {}
+    releaseMic();
+  }
+  // Close the microphone completely, so the phone's speaker goes back to normal volume.
+  function releaseMic() {
+    try { stream && stream.getTracks().forEach(tr => tr.stop()); } catch {}
+    stream = null;
+    try { audioCtx && audioCtx.close(); } catch {}
+    audioCtx = null; analyser = null;
   }
   function finishRecording() {
     micLabel();
