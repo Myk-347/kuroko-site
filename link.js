@@ -74,7 +74,7 @@
   }
 
   function handle(msg) {
-    if (!appSeen) { appSeen = true; setState('ok', t.ok); mic.disabled = !Recognition; }
+    if (!appSeen) { appSeen = true; setState('ok', t.ok); mic.disabled = !(Recognition || canRecord); }
     if (msg.kind === 'hello') return;
     if (msg.kind === 'say') {
       if (document.querySelector('[data-id="' + CSS.escape(msg.id) + '"]')) return;
@@ -83,8 +83,11 @@
       if (!msg.replay || msg.last) { if (msg.audio) play(msg.audio); else speak(msg.translated); }
     }
     if (msg.kind === 'echo') {
-      const el = document.querySelector('[data-id="' + CSS.escape(msg.id) + '"] .tr');
-      if (el) el.textContent = msg.translated;
+      const box = document.querySelector('[data-id="' + CSS.escape(msg.id) + '"]');
+      if (box) {
+        box.querySelector('.tr').textContent = msg.translated;
+        if (typeof msg.text === 'string') box.querySelector('.orig').textContent = msg.text || '…?';
+      }
     }
     if (msg.kind === 'end') finish();
   }
@@ -130,7 +133,9 @@
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   const PAUSE = 2500, LONGEST = 40000, FIRST_WORDS = 8000;
   let rec = null, listening = false, collected = '', current = '', lastHeard = 0, startedAt = 0, watch = null;
-  if (!Recognition) { mic.style.display = 'none'; live.textContent = t.noMic; }
+  // No speech recognition in this browser (e.g. Samsung Internet, in-app browsers): record the voice, the app recognizes it.
+  const canRecord = !Recognition && !!(navigator.mediaDevices && window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('audio/webm;codecs=opus'));
+  if (!Recognition && !canRecord) { mic.style.display = 'none'; live.textContent = t.noMic; }
 
   const phrase = () => (collected + ' ' + current).trim();
 
@@ -212,7 +217,71 @@
     // iOS: the first tap also unlocks the voice output.
     if ('speechSynthesis' in window && !window.__unlocked) { window.__unlocked = true; speechSynthesis.speak(new SpeechSynthesisUtterance('')); }
     keepAwake();
+    if (!Recognition) { if (recording) stopRecording(); else startRecording(); return; }
     if (listening) stopListening(); else startListening();
+  });
+
+  // Recording fallback: the phrase ends after 2.5 s of silence (or 30 s), then goes to the app as audio.
+  let stream = null, recorder = null, chunks = [], recording = false, spoke = false, audioCtx = null, analyser = null, levelTimer = null;
+  async function startRecording() {
+    if (recording) return;
+    try {
+      if (!stream) stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    } catch { live.textContent = t.noMic; return; }
+    if (player) player.pause();
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      analyser = audioCtx.createAnalyser(); analyser.fftSize = 1024;
+      audioCtx.createMediaStreamSource(stream).connect(analyser);
+    }
+    try { await audioCtx.resume(); } catch {}
+    chunks = []; spoke = false;
+    recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 24000 });
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    recorder.onstop = finishRecording;
+    recorder.start();
+    recording = true; mic.classList.add('on'); mic.textContent = t.micOn;
+    const begun = Date.now(); let lastLoud = begun; const buf = new Float32Array(analyser.fftSize);
+    clearInterval(levelTimer);
+    levelTimer = setInterval(() => {
+      analyser.getFloatTimeDomainData(buf);
+      let sum = 0; for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+      const now = Date.now();
+      if (Math.sqrt(sum / buf.length) > 0.02) { spoke = true; lastLoud = now; live.textContent = '🎤 …'; }
+      if ((spoke && now - lastLoud >= PAUSE) || now - begun >= 30000 || (!spoke && now - begun >= FIRST_WORDS)) stopRecording();
+    }, 150);
+  }
+  function stopRecording() {
+    if (!recording) return;
+    recording = false; clearInterval(levelTimer);
+    mic.classList.remove('on'); mic.textContent = t.mic; live.textContent = '';
+    try { recorder.stop(); } catch {}
+  }
+  function finishRecording() {
+    const blob = new Blob(chunks, { type: 'audio/webm' });
+    if (!spoke || blob.size < 1500) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const audio = String(reader.result).split(',')[1];
+      const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+      add({ id, mine: true, orig: '🎤 …', tr: '…' });
+      send({ kind: 'say-audio', id, audio, lang: myLang });
+    };
+    reader.readAsDataURL(blob);
+  }
+
+  // One tap to start: browsers only play sound after the person has touched the page.
+  const START = { en: 'Start the conversation', ja: '会話を始める', zh: '开始对话', ko: '대화 시작', uk: 'Почати розмову', es: 'Empezar la conversación', ru: 'Начать разговор' }[browser] || 'Start the conversation';
+  const cover = document.createElement('div');
+  cover.style.cssText = 'position:fixed;inset:0;z-index:9;display:flex;align-items:center;justify-content:center;background:#05261fe6;padding:24px';
+  const go = document.createElement('button');
+  go.textContent = '▶  ' + START;
+  go.style.cssText = 'font:inherit;font-size:20px;font-weight:800;padding:20px 28px;border-radius:20px;border:0;background:#52e3c1;color:#05261f;width:100%;max-width:360px';
+  cover.append(go); document.body.append(cover);
+  go.addEventListener('click', () => {
+    if ('speechSynthesis' in window && !window.__unlocked) { window.__unlocked = true; speechSynthesis.speak(new SpeechSynthesisUtterance('')); }
+    keepAwake();
+    cover.remove();
   });
 
   function say(text) {
