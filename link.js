@@ -80,7 +80,7 @@
       if (document.querySelector('[data-id="' + CSS.escape(msg.id) + '"]')) return;
       add({ id: msg.id, mine: false, orig: msg.text, tr: msg.translated, audio: msg.audio });
       // Lines resent after sleep: only the newest one is spoken.
-      if (!msg.replay || msg.last) { if (msg.audio) play(msg.audio); else speak(msg.translated); }
+      if (!msg.replay || msg.last) voiceOut(msg.audio, msg.translated);
     }
     if (msg.kind === 'echo') {
       const box = document.querySelector('[data-id="' + CSS.escape(msg.id) + '"]');
@@ -103,36 +103,74 @@
     const o = document.createElement('div'); o.className = 'orig'; o.textContent = orig;
     const r = document.createElement('div'); r.className = 'tr'; r.textContent = tr || '…';
     div.append(label, o, r);
-    if (!mine) { const b = document.createElement('button'); b.textContent = t.replay; b.onclick = () => audio ? play(audio, true) : speak(r.textContent, true); div.append(b); }
+    if (!mine) { const b = document.createElement('button'); b.textContent = t.replay; b.onclick = () => { pauseVoice(); queue = []; audio ? play(audio, true) : speak(r.textContent, true); }; div.append(b); }
     log.append(div);
     log.scrollTop = log.scrollHeight;
   }
 
-  // Voice out.
+  // ---------- Voice out ----------
+  // One audio element for everything. Between phrases it plays silence in a loop:
+  // this keeps the page alive when the screen locks, so translations are still spoken.
+  const MORE = {
+    en: { on: 'Microphone on · tap to turn off' }, ja: { on: 'マイクON · タップでオフ' }, zh: { on: '麦克风已开 · 点按关闭' },
+    ko: { on: '마이크 켜짐 · 눌러서 끄기' }, uk: { on: 'Мікрофон увімкнено · натисни, щоб вимкнути' },
+    es: { on: 'Micrófono activado · toca para apagar' }, ru: { on: 'Микрофон включён · нажми, чтобы выключить' }
+  }[browser] || { on: 'Microphone on · tap to turn off' };
+
+  const silence = (() => {
+    const rate = 8000, n = rate, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+    v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  })();
+  const player = new Audio();
+  let speaking = false, queue = [];
+  function idle() { player.onended = null; player.loop = true; player.src = silence; player.play().catch(() => {}); }
+  function stopSpeech() {
+    queue = []; speaking = false;
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    if (!player.loop) idle();
+  }
+  function afterSpeech() { speaking = false; if (queue.length) return queue.shift()(); resumeVoice(); }
+
   function speak(text, force) {
-    if (!text || !('speechSynthesis' in window) || (!soundOn && !force)) return;
+    if (!text || !('speechSynthesis' in window) || (!soundOn && !force)) return afterSpeech();
+    speaking = true;
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = LANGS[myLang][1];
     const voice = speechSynthesis.getVoices().find(v => v.lang && v.lang.toLowerCase().startsWith(myLang));
     if (voice) u.voice = voice;
+    u.onend = u.onerror = afterSpeech;
     speechSynthesis.speak(u);
   }
 
   // A natural voice recorded by the app (Google), when it sent one.
-  let player = null;
   function play(base64, force) {
-    if (!soundOn && !force) return;
+    if (!soundOn && !force) return afterSpeech();
+    speaking = true;
     if ('speechSynthesis' in window) speechSynthesis.cancel();
-    if (player) player.pause();
-    player = new Audio('data:audio/mpeg;base64,' + base64);
-    player.play().catch(() => {});
+    player.loop = false;
+    player.src = 'data:audio/mpeg;base64,' + base64;
+    player.onended = () => { idle(); afterSpeech(); };
+    player.play().catch(() => { idle(); afterSpeech(); });
   }
 
-  // Voice in. Short pauses don't cut the phrase: it is sent after 2.5 s of silence (or 40 s at most).
+  // A translation arrived: speak it now, or right after the phrase the person is saying.
+  function voiceOut(audio, text) {
+    const run = () => { pauseVoice(); audio ? play(audio) : speak(text); };
+    if (busySpeaking()) queue.push(run); else run();
+  }
+
+  // ---------- Voice in ----------
+  // Short pauses don't cut the phrase: it is sent after 2.5 s of silence (or 40 s at most).
+  // Hands-free: one tap turns the microphone on for the whole conversation.
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   const PAUSE = 2500, LONGEST = 40000, FIRST_WORDS = 8000;
   let rec = null, listening = false, collected = '', current = '', lastHeard = 0, startedAt = 0, watch = null;
+  let handsFree = false;
   // No speech recognition in this browser (e.g. Samsung Internet, in-app browsers): record the voice, the app recognizes it.
   let useRecognition = !!Recognition;
   const recordType = (window.MediaRecorder && MediaRecorder.isTypeSupported) ? ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm'].find(m => MediaRecorder.isTypeSupported(m)) : null;
@@ -142,14 +180,24 @@
   if (!Recognition && !canRecord) { mic.style.display = 'none'; why('no voice input'); }
 
   const phrase = () => (collected + ' ' + current).trim();
+  const busySpeaking = () => (listening && phrase()) || (recording && spoke);
+  function micLabel() {
+    mic.classList.toggle('on', handsFree);
+    mic.textContent = handsFree ? MORE.on : t.mic;
+  }
+  function startVoice() { if (!handsFree || speaking || ended) return; useRecognition ? startListening() : startRecording(); }
+  function resumeVoice() { setTimeout(startVoice, 350); }
+  // Stop listening without sending (we're about to speak, so the mic doesn't hear the translation).
+  function pauseVoice() {
+    if (listening) { listening = false; clearInterval(watch); if (rec) { rec.onend = null; try { rec.abort(); } catch {} } collected = ''; current = ''; live.textContent = ''; }
+    if (recording) { spoke = false; stopRecording(true); }
+  }
 
   function startListening() {
     if (!Recognition || listening) return;
-    if ('speechSynthesis' in window) speechSynthesis.cancel();
-    if (player) player.pause();
     collected = ''; current = '';
     startedAt = lastHeard = Date.now();
-    listening = true; mic.classList.add('on'); mic.textContent = t.micOn;
+    listening = true; micLabel();
     clearInterval(watch);
     watch = setInterval(check, 300);
     runRecognizer();
@@ -182,8 +230,9 @@
     // Some browsers (e.g. Samsung Internet) have the recognizer but it doesn't work: switch to recording.
     rec.onerror = (e) => {
       if (!['not-allowed', 'service-not-allowed', 'network', 'audio-capture', 'language-not-supported'].includes(e.error)) return;
-      rec.onend = null; listening = false; clearInterval(watch); done();
-      if (canRecord) { useRecognition = false; startRecording(); } else { why('speech: ' + e.error + ', rec: ' + (recordType || 'none')); }
+      rec.onend = null; listening = false; clearInterval(watch);
+      if (canRecord) { useRecognition = false; collected = ''; current = ''; startRecording(); }
+      else { handsFree = false; micLabel(); why('speech: ' + e.error + ', rec: ' + (recordType || 'none')); }
     };
     rec.start();
   }
@@ -202,13 +251,15 @@
 
   function done() {
     clearInterval(watch);
-    mic.classList.remove('on'); mic.textContent = t.mic; live.textContent = '';
+    live.textContent = '';
     const text = collected.trim();
     collected = ''; current = '';
+    micLabel();
     if (text) say(text);
+    if (queue.length) queue.shift()(); else resumeVoice();
   }
 
-  // Keep the screen on while the conversation is open, so the phone doesn't sleep and miss a translation.
+  // Keep the screen on while the conversation is open.
   let wakeLock = null;
   async function keepAwake() {
     try { if ('wakeLock' in navigator && document.visibilityState === 'visible' && !wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); } } catch {}
@@ -218,16 +269,25 @@
     keepAwake();
     // Back from sleep: reconnect at once and collect what was missed.
     if (!ws || ws.readyState > 1) connect(); else send({ kind: 'sync', known: appIds() });
+    resumeVoice();
   });
   document.addEventListener('click', keepAwake, { once: true });
   keepAwake();
 
+  // One tap: microphone on for the whole conversation. Another tap: off.
   mic.addEventListener('click', () => {
-    // iOS: the first tap also unlocks the voice output.
     if ('speechSynthesis' in window && !window.__unlocked) { window.__unlocked = true; speechSynthesis.speak(new SpeechSynthesisUtterance('')); }
     keepAwake();
-    if (!useRecognition) { if (recording) stopRecording(); else startRecording(); return; }
-    if (listening) stopListening(); else startListening();
+    if (handsFree) {
+      handsFree = false;
+      if (listening) stopListening();
+      if (recording) stopRecording();
+      micLabel();
+      return;
+    }
+    handsFree = true;
+    micLabel();
+    startVoice();
   });
 
   // Recording fallback: the phrase ends after 2.5 s of silence (or 30 s), then goes to the app as audio.
@@ -236,8 +296,8 @@
     if (recording) return;
     try {
       if (!stream) stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-    } catch (err) { why('mic: ' + (err && err.name || 'denied')); return; }
-    if (player) player.pause();
+    } catch (err) { handsFree = false; micLabel(); why('mic: ' + (err && err.name || 'denied')); return; }
+    if (!handsFree || speaking) return;
     if (!audioCtx) {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       analyser = audioCtx.createAnalyser(); analyser.fftSize = 1024;
@@ -249,7 +309,7 @@
     recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
     recorder.onstop = finishRecording;
     recorder.start();
-    recording = true; mic.classList.add('on'); mic.textContent = t.micOn;
+    recording = true; micLabel();
     const begun = Date.now(); let lastLoud = begun; const buf = new Float32Array(analyser.fftSize);
     clearInterval(levelTimer);
     levelTimer = setInterval(() => {
@@ -260,23 +320,29 @@
       if ((spoke && now - lastLoud >= PAUSE) || now - begun >= 30000 || (!spoke && now - begun >= FIRST_WORDS)) stopRecording();
     }, 150);
   }
-  function stopRecording() {
+  let quietStop = false;
+  function stopRecording(quiet) {
     if (!recording) return;
-    recording = false; clearInterval(levelTimer);
-    mic.classList.remove('on'); mic.textContent = t.mic; live.textContent = '';
+    recording = false; clearInterval(levelTimer); quietStop = !!quiet;
+    live.textContent = '';
     try { recorder.stop(); } catch {}
   }
   function finishRecording() {
+    micLabel();
     const blob = new Blob(chunks, { type: 'audio/webm' });
-    if (!spoke || blob.size < 1500) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const audio = String(reader.result).split(',')[1];
-      const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-      add({ id, mine: true, orig: '🎤 …', tr: '…' });
-      send({ kind: 'say-audio', id, audio, mime: recordType, lang: myLang });
-    };
-    reader.readAsDataURL(blob);
+    const send_ = spoke && blob.size >= 1500 && !quietStop;
+    if (quietStop) { quietStop = false; return; }
+    if (send_) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const audio = String(reader.result).split(',')[1];
+        const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+        add({ id, mine: true, orig: '🎤 …', tr: '…' });
+        send({ kind: 'say-audio', id, audio, mime: recordType, lang: myLang });
+      };
+      reader.readAsDataURL(blob);
+    }
+    if (queue.length) queue.shift()(); else resumeVoice();
   }
 
   // One tap to start: browsers only play sound after the person has touched the page.
@@ -289,6 +355,8 @@
   cover.append(go); document.body.append(cover);
   go.addEventListener('click', () => {
     if ('speechSynthesis' in window && !window.__unlocked) { window.__unlocked = true; speechSynthesis.speak(new SpeechSynthesisUtterance('')); }
+    idle();
+    if ('mediaSession' in navigator) { try { navigator.mediaSession.metadata = new MediaMetadata({ title: 'Kuroko', artist: 'Live conversation' }); } catch {} }
     keepAwake();
     cover.remove();
   });
@@ -316,11 +384,12 @@
   $('sound').addEventListener('click', () => {
     soundOn = !soundOn;
     $('sound').textContent = soundOn ? '🔊' : '🔇';
-    if (!soundOn) { if ('speechSynthesis' in window) speechSynthesis.cancel(); if (player) player.pause(); }
+    if (!soundOn) stopSpeech();
   });
 
   function finish() {
     ended = true;
+    handsFree = false;
     if (listening) { listening = false; try { rec.stop(); } catch {} }
     try { wakeLock && wakeLock.release(); } catch {}
     setState('', t.ended);
