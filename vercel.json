@@ -1,0 +1,58 @@
+{
+  "version": 2,
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "rewrites": [
+    {
+      "source": "/:lang(en|ja|zh|ko|uk|es|ru)/",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/:lang(en|ja|zh|ko|uk|es|ru)/translate",
+      "destination": "/translate.html"
+    },
+    {
+      "source": "/:lang(en|ja|zh|ko|uk|es|ru)/speak",
+      "destination": "/speak.html"
+    },
+    {
+      "source": "/:lang(en|ja|zh|ko|uk|es|ru)/clear-talk",
+      "destination": "/clear-talk.html"
+    },
+    {
+      "source": "/:lang(en|ja|zh|ko|uk|es|ru)/privacy",
+      "destination": "/privacy.html"
+    },
+    {
+      "source": "/:lang(en|ja|zh|ko|uk|es|ru)/support",
+      "destination": "/support.html"
+    },
+    {
+      "source": "/:lang(en|ja|zh|ko|uk|es|ru)/terms",
+      "destination": "/terms.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)\\.(css|js|svg)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=3600, stale-while-revalidate=86400"
+        }
+      ]
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/get",
+      "destination": "/coming-soon.html",
+      "permanent": false
+    },
+    {
+      "source": "/:lang(en|ja|zh|ko|uk|es|ru)/get",
+      "destination": "/coming-soon.html",
+      "permanent": false
+    }
+  ]
+}
