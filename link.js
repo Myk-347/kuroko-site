@@ -76,8 +76,8 @@
     if (!appSeen) { appSeen = true; setState('ok', t.ok); mic.disabled = !Recognition; }
     if (msg.kind === 'hello') return;
     if (msg.kind === 'say') {
-      add({ id: msg.id, mine: false, orig: msg.text, tr: msg.translated });
-      speak(msg.translated);
+      add({ id: msg.id, mine: false, orig: msg.text, tr: msg.translated, audio: msg.audio });
+      if (msg.audio) play(msg.audio); else speak(msg.translated);
     }
     if (msg.kind === 'echo') {
       const el = document.querySelector('[data-id="' + CSS.escape(msg.id) + '"] .tr');
@@ -86,7 +86,7 @@
     if (msg.kind === 'end') finish();
   }
 
-  function add({ id, mine, orig, tr }) {
+  function add({ id, mine, orig, tr, audio }) {
     const hint = $('hint'); if (hint) hint.remove();
     const div = document.createElement('div');
     div.className = 'msg' + (mine ? ' mine' : '');
@@ -95,7 +95,7 @@
     const o = document.createElement('div'); o.className = 'orig'; o.textContent = orig;
     const r = document.createElement('div'); r.className = 'tr'; r.textContent = tr || '…';
     div.append(label, o, r);
-    if (!mine) { const b = document.createElement('button'); b.textContent = t.replay; b.onclick = () => speak(r.textContent, true); div.append(b); }
+    if (!mine) { const b = document.createElement('button'); b.textContent = t.replay; b.onclick = () => audio ? play(audio, true) : speak(r.textContent, true); div.append(b); }
     log.append(div);
     log.scrollTop = log.scrollHeight;
   }
@@ -111,6 +111,16 @@
     speechSynthesis.speak(u);
   }
 
+  // A natural voice recorded by the app (Google), when it sent one.
+  let player = null;
+  function play(base64, force) {
+    if (!soundOn && !force) return;
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    if (player) player.pause();
+    player = new Audio('data:audio/mpeg;base64,' + base64);
+    player.play().catch(() => {});
+  }
+
   // Voice in.
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   let rec = null, heard = '', listening = false;
@@ -119,6 +129,7 @@
   function startListening() {
     if (!Recognition || listening) return;
     if ('speechSynthesis' in window) speechSynthesis.cancel();
+    if (player) player.pause();
     rec = new Recognition();
     rec.lang = LANGS[myLang][1];
     rec.interimResults = true;
@@ -164,7 +175,7 @@
   $('sound').addEventListener('click', () => {
     soundOn = !soundOn;
     $('sound').textContent = soundOn ? '🔊' : '🔇';
-    if (!soundOn && 'speechSynthesis' in window) speechSynthesis.cancel();
+    if (!soundOn) { if ('speechSynthesis' in window) speechSynthesis.cancel(); if (player) player.pause(); }
   });
 
   function finish() {
