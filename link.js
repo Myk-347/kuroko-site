@@ -50,6 +50,7 @@
 
   async function connect() {
     if (!code || code.length < 6) { setState('', t.badLink); return; }
+    if (ws && ws.readyState <= 1) return;
     setState('wait', t.connecting);
     if (!config) {
       try { config = await fetch('/config.json', { cache: 'no-store' }).then(r => r.json()); } catch { config = {}; }
@@ -65,7 +66,7 @@
     ws.onmessage = (e) => {
       let m; try { m = JSON.parse(e.data); } catch { return; }
       if (m.event === 'phx_reply' && m.topic === topic()) {
-        if (m.payload && m.payload.status === 'ok') { joined = true; setState(appSeen ? 'ok' : 'wait', appSeen ? t.ok : t.waiting); send({ kind: 'hello', lang: myLang }); }
+        if (m.payload && m.payload.status === 'ok') { joined = true; setState(appSeen ? 'ok' : 'wait', appSeen ? t.ok : t.waiting); send({ kind: 'hello', lang: myLang }); send({ kind: 'sync', known: appIds() }); }
       }
       if (m.event === 'broadcast' && m.payload && m.payload.payload && m.payload.payload.from === 'app') handle(m.payload.payload);
     };
@@ -76,8 +77,10 @@
     if (!appSeen) { appSeen = true; setState('ok', t.ok); mic.disabled = !Recognition; }
     if (msg.kind === 'hello') return;
     if (msg.kind === 'say') {
+      if (document.querySelector('[data-id="' + CSS.escape(msg.id) + '"]')) return;
       add({ id: msg.id, mine: false, orig: msg.text, tr: msg.translated, audio: msg.audio });
-      if (msg.audio) play(msg.audio); else speak(msg.translated);
+      // Lines resent after sleep: only the newest one is spoken.
+      if (!msg.replay || msg.last) { if (msg.audio) play(msg.audio); else speak(msg.translated); }
     }
     if (msg.kind === 'echo') {
       const el = document.querySelector('[data-id="' + CSS.escape(msg.id) + '"] .tr');
@@ -85,6 +88,8 @@
     }
     if (msg.kind === 'end') finish();
   }
+
+  function appIds() { return [...document.querySelectorAll('.msg:not(.mine)')].map(d => d.dataset.id); }
 
   function add({ id, mine, orig, tr, audio }) {
     const hint = $('hint'); if (hint) hint.remove();
@@ -121,35 +126,93 @@
     player.play().catch(() => {});
   }
 
-  // Voice in.
+  // Voice in. Short pauses don't cut the phrase: it is sent after 2.5 s of silence (or 40 s at most).
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let rec = null, heard = '', listening = false;
+  const PAUSE = 2500, LONGEST = 40000, FIRST_WORDS = 8000;
+  let rec = null, listening = false, collected = '', current = '', lastHeard = 0, startedAt = 0, watch = null;
   if (!Recognition) { mic.style.display = 'none'; live.textContent = t.noMic; }
+
+  const phrase = () => (collected + ' ' + current).trim();
 
   function startListening() {
     if (!Recognition || listening) return;
     if ('speechSynthesis' in window) speechSynthesis.cancel();
     if (player) player.pause();
+    collected = ''; current = '';
+    startedAt = lastHeard = Date.now();
+    listening = true; mic.classList.add('on'); mic.textContent = t.micOn;
+    clearInterval(watch);
+    watch = setInterval(check, 300);
+    runRecognizer();
+  }
+
+  // The browser stops after each short pause; we quietly start it again until the real pause.
+  function runRecognizer() {
     rec = new Recognition();
     rec.lang = LANGS[myLang][1];
     rec.interimResults = true;
     rec.continuous = false;
-    heard = '';
     rec.onresult = (e) => {
       let text = '';
       for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript;
-      heard = text; live.textContent = text;
+      current = text; lastHeard = Date.now();
+      live.textContent = phrase();
     };
-    rec.onend = () => { listening = false; mic.classList.remove('on'); mic.textContent = t.mic; live.textContent = ''; if (heard.trim()) say(heard.trim()); };
-    rec.onerror = () => {};
-    listening = true; mic.classList.add('on'); mic.textContent = t.micOn;
+    rec.onend = () => {
+      collected = phrase(); current = '';
+      if (listening) {
+        const now = Date.now();
+        const waitingForFirstWords = !collected && now - startedAt < FIRST_WORDS;
+        if ((waitingForFirstWords || now - lastHeard < PAUSE) && now - startedAt < LONGEST) {
+          try { runRecognizer(); return; } catch {}
+        }
+        listening = false;
+      }
+      done();
+    };
+    rec.onerror = (e) => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { listening = false; live.textContent = t.noMic; } };
     rec.start();
   }
+
+  function check() {
+    if (!listening) return;
+    const now = Date.now();
+    if ((phrase() && now - lastHeard >= PAUSE) || now - startedAt >= LONGEST) stopListening();
+  }
+
+  function stopListening() {
+    listening = false;
+    clearInterval(watch);
+    try { rec.stop(); } catch { done(); }
+  }
+
+  function done() {
+    clearInterval(watch);
+    mic.classList.remove('on'); mic.textContent = t.mic; live.textContent = '';
+    const text = collected.trim();
+    collected = ''; current = '';
+    if (text) say(text);
+  }
+
+  // Keep the screen on while the conversation is open, so the phone doesn't sleep and miss a translation.
+  let wakeLock = null;
+  async function keepAwake() {
+    try { if ('wakeLock' in navigator && document.visibilityState === 'visible' && !wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); } } catch {}
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' || ended) return;
+    keepAwake();
+    // Back from sleep: reconnect at once and collect what was missed.
+    if (!ws || ws.readyState > 1) connect(); else send({ kind: 'sync', known: appIds() });
+  });
+  document.addEventListener('click', keepAwake, { once: true });
+  keepAwake();
 
   mic.addEventListener('click', () => {
     // iOS: the first tap also unlocks the voice output.
     if ('speechSynthesis' in window && !window.__unlocked) { window.__unlocked = true; speechSynthesis.speak(new SpeechSynthesisUtterance('')); }
-    if (listening) rec.stop(); else startListening();
+    keepAwake();
+    if (listening) stopListening(); else startListening();
   });
 
   function say(text) {
@@ -180,7 +243,8 @@
 
   function finish() {
     ended = true;
-    if (rec && listening) rec.stop();
+    if (listening) { listening = false; try { rec.stop(); } catch {} }
+    try { wakeLock && wakeLock.release(); } catch {}
     setState('', t.ended);
     $('foot').innerHTML = '<div class="ended">' + t.ended + '<br><br><a href="/get?from=link">' + t.get + ' →</a></div>';
     try { ws && ws.close(); } catch {}
