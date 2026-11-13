@@ -175,6 +175,8 @@
   let useRecognition = !!Recognition;
   const recordType = (window.MediaRecorder && MediaRecorder.isTypeSupported) ? ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm'].find(m => MediaRecorder.isTypeSupported(m)) : null;
   const canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && recordType);
+  // Android: the browser's recognizer beeps every time it restarts. Recording is silent, so Android records.
+  if (/Android/i.test(navigator.userAgent) && canRecord) useRecognition = false;
   // Shows why voice doesn't work, so we can fix it.
   const why = (reason) => { live.textContent = t.noMic + ' (' + reason + ')'; };
   if (!Recognition && !canRecord) { mic.style.display = 'none'; why('no voice input'); }
@@ -310,14 +312,24 @@
     recorder.onstop = finishRecording;
     recorder.start();
     recording = true; micLabel();
-    const begun = Date.now(); let lastLoud = begun; const buf = new Float32Array(analyser.fftSize);
+    let begun = Date.now(); let lastLoud = begun; const buf = new Float32Array(analyser.fftSize);
     clearInterval(levelTimer);
     levelTimer = setInterval(() => {
       analyser.getFloatTimeDomainData(buf);
       let sum = 0; for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
       const now = Date.now();
       if (Math.sqrt(sum / buf.length) > 0.03) { spoke = true; lastLoud = now; live.textContent = '🎤 …'; }
-      if ((spoke && now - lastLoud >= PAUSE) || now - begun >= 30000 || (!spoke && now - begun >= FIRST_WORDS)) stopRecording();
+      if ((spoke && now - lastLoud >= PAUSE) || now - begun >= 30000) stopRecording();
+      else if (!spoke && now - begun >= FIRST_WORDS) {
+        // Nobody spoke yet: start a fresh recording on the same open microphone (no clicks, no beeps).
+        try { recorder.ondataavailable = null; recorder.onstop = null; recorder.stop(); } catch {}
+        chunks = [];
+        recorder = new MediaRecorder(stream, { mimeType: recordType, audioBitsPerSecond: 24000 });
+        recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+        recorder.onstop = finishRecording;
+        recorder.start();
+        begun = lastLoud = now;
+      }
     }, 150);
   }
   let quietStop = false;
