@@ -5,5 +5,7 @@
   "supportEmail": "nikolay.sht@gmail.com",
   "company": "Headway Consulting",
   "analytics": "",
-  "signupEndpoint": ""
+  "signupEndpoint": "",
+  "supabaseUrl": "https://ukwwbzxgwnxbcjsrgvja.supabase.co",
+  "supabaseKey": "sb_publishable_a1ABe3Nc_engBykOb9E8Gg_tMeuOYcR"
 }
