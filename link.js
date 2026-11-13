@@ -134,7 +134,8 @@
   const PAUSE = 2500, LONGEST = 40000, FIRST_WORDS = 8000;
   let rec = null, listening = false, collected = '', current = '', lastHeard = 0, startedAt = 0, watch = null;
   // No speech recognition in this browser (e.g. Samsung Internet, in-app browsers): record the voice, the app recognizes it.
-  const canRecord = !Recognition && !!(navigator.mediaDevices && window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('audio/webm;codecs=opus'));
+  let useRecognition = !!Recognition;
+  const canRecord = !!(navigator.mediaDevices && window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('audio/webm;codecs=opus'));
   if (!Recognition && !canRecord) { mic.style.display = 'none'; live.textContent = t.noMic; }
 
   const phrase = () => (collected + ' ' + current).trim();
@@ -175,7 +176,12 @@
       }
       done();
     };
-    rec.onerror = (e) => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { listening = false; live.textContent = t.noMic; } };
+    // Some browsers (e.g. Samsung Internet) have the recognizer but it doesn't work: switch to recording.
+    rec.onerror = (e) => {
+      if (!['not-allowed', 'service-not-allowed', 'network', 'audio-capture', 'language-not-supported'].includes(e.error)) return;
+      rec.onend = null; listening = false; clearInterval(watch); done();
+      if (canRecord) { useRecognition = false; startRecording(); } else { live.textContent = t.noMic; }
+    };
     rec.start();
   }
 
@@ -217,7 +223,7 @@
     // iOS: the first tap also unlocks the voice output.
     if ('speechSynthesis' in window && !window.__unlocked) { window.__unlocked = true; speechSynthesis.speak(new SpeechSynthesisUtterance('')); }
     keepAwake();
-    if (!Recognition) { if (recording) stopRecording(); else startRecording(); return; }
+    if (!useRecognition) { if (recording) stopRecording(); else startRecording(); return; }
     if (listening) stopListening(); else startListening();
   });
 
@@ -235,7 +241,7 @@
       audioCtx.createMediaStreamSource(stream).connect(analyser);
     }
     try { await audioCtx.resume(); } catch {}
-    chunks = []; spoke = false;
+    chunks = []; spoke = false; live.textContent = '';
     recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 24000 });
     recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
     recorder.onstop = finishRecording;
