@@ -135,8 +135,11 @@
   let rec = null, listening = false, collected = '', current = '', lastHeard = 0, startedAt = 0, watch = null;
   // No speech recognition in this browser (e.g. Samsung Internet, in-app browsers): record the voice, the app recognizes it.
   let useRecognition = !!Recognition;
-  const canRecord = !!(navigator.mediaDevices && window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('audio/webm;codecs=opus'));
-  if (!Recognition && !canRecord) { mic.style.display = 'none'; live.textContent = t.noMic; }
+  const recordType = (window.MediaRecorder && MediaRecorder.isTypeSupported) ? ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm'].find(m => MediaRecorder.isTypeSupported(m)) : null;
+  const canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && recordType);
+  // Shows why voice doesn't work, so we can fix it.
+  const why = (reason) => { live.textContent = t.noMic + ' (' + reason + ')'; };
+  if (!Recognition && !canRecord) { mic.style.display = 'none'; why('no voice input'); }
 
   const phrase = () => (collected + ' ' + current).trim();
 
@@ -180,7 +183,7 @@
     rec.onerror = (e) => {
       if (!['not-allowed', 'service-not-allowed', 'network', 'audio-capture', 'language-not-supported'].includes(e.error)) return;
       rec.onend = null; listening = false; clearInterval(watch); done();
-      if (canRecord) { useRecognition = false; startRecording(); } else { live.textContent = t.noMic; }
+      if (canRecord) { useRecognition = false; startRecording(); } else { why('speech: ' + e.error + ', rec: ' + (recordType || 'none')); }
     };
     rec.start();
   }
@@ -233,7 +236,7 @@
     if (recording) return;
     try {
       if (!stream) stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-    } catch { live.textContent = t.noMic; return; }
+    } catch (err) { why('mic: ' + (err && err.name || 'denied')); return; }
     if (player) player.pause();
     if (!audioCtx) {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -242,7 +245,7 @@
     }
     try { await audioCtx.resume(); } catch {}
     chunks = []; spoke = false; live.textContent = '';
-    recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus', audioBitsPerSecond: 24000 });
+    try { recorder = new MediaRecorder(stream, { mimeType: recordType, audioBitsPerSecond: 24000 }); } catch (err) { why('recorder: ' + (err && err.name)); return; }
     recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
     recorder.onstop = finishRecording;
     recorder.start();
@@ -271,7 +274,7 @@
       const audio = String(reader.result).split(',')[1];
       const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
       add({ id, mine: true, orig: '🎤 …', tr: '…' });
-      send({ kind: 'say-audio', id, audio, lang: myLang });
+      send({ kind: 'say-audio', id, audio, mime: recordType, lang: myLang });
     };
     reader.readAsDataURL(blob);
   }
