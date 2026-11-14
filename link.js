@@ -173,7 +173,7 @@
   let handsFree = false;
   // No speech recognition in this browser (e.g. Samsung Internet, in-app browsers): record the voice, the app recognizes it.
   let useRecognition = !!Recognition;
-  const recordType = (window.MediaRecorder && MediaRecorder.isTypeSupported) ? ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm'].find(m => MediaRecorder.isTypeSupported(m)) : null;
+  const recordType = (window.MediaRecorder && MediaRecorder.isTypeSupported) ? ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm', 'audio/mp4'].find(m => MediaRecorder.isTypeSupported(m)) : null;
   const canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && recordType);
   // Phones: the browser's recognizer beeps (Android) or stops after a short pause and mishears (iPhone Safari).
   // Recording is steadier: the phrase goes to the app, and Google recognizes it in the chosen language.
