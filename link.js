@@ -175,8 +175,9 @@
   let useRecognition = !!Recognition;
   const recordType = (window.MediaRecorder && MediaRecorder.isTypeSupported) ? ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm'].find(m => MediaRecorder.isTypeSupported(m)) : null;
   const canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && recordType);
-  // Android: the browser's recognizer beeps every time it restarts. Recording is silent, so Android records.
-  if (/Android/i.test(navigator.userAgent) && canRecord) useRecognition = false;
+  // Phones: the browser's recognizer beeps (Android) or stops after a short pause and mishears (iPhone Safari).
+  // Recording is steadier: the phrase goes to the app, and Google recognizes it in the chosen language.
+  if (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent) && canRecord) useRecognition = false;
   // Shows why voice doesn't work, so we can fix it.
   const why = (reason) => { live.textContent = t.noMic + ' (' + reason + ')'; };
   if (!Recognition && !canRecord) { mic.style.display = 'none'; why('no voice input'); }
