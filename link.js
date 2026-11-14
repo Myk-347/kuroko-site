@@ -75,6 +75,7 @@
 
   function handle(msg) {
     if (!appSeen) { appSeen = true; setState('ok', t.ok); mic.disabled = !(Recognition || canRecord); }
+    if (msg.lang) appLang = msg.lang;
     if (msg.kind === 'hello') return;
     if (msg.kind === 'say') {
       if (document.querySelector('[data-id="' + CSS.escape(msg.id) + '"]')) return;
@@ -90,6 +91,27 @@
       }
     }
     if (msg.kind === 'end') finish();
+  }
+
+  // Kuroko server: recognizes and translates the phrase directly, without a round trip through the iPhone.
+  let appLang = '';
+  async function viaServer(body) {
+    if (!appLang || !config || !config.supabaseUrl) return null;
+    const stop = new AbortController(); const timer = setTimeout(() => stop.abort(), 15000);
+    try {
+      const r = await fetch(config.supabaseUrl + '/functions/v1/kuroko-link', {
+        method: 'POST', signal: stop.signal,
+        headers: { 'content-type': 'application/json', apikey: config.supabaseKey },
+        body: JSON.stringify(Object.assign({}, body, { from: myLang, to: appLang }))
+      });
+      return r.ok ? await r.json() : null;
+    } catch { return null; } finally { clearTimeout(timer); }
+  }
+  function fill(id, orig, tr) {
+    const box = document.querySelector('[data-id="' + CSS.escape(id) + '"]');
+    if (!box) return;
+    if (orig != null) box.querySelector('.orig').textContent = orig;
+    if (tr != null) box.querySelector('.tr').textContent = tr;
   }
 
   function appIds() { return [...document.querySelectorAll('.msg:not(.mine)')].map(d => d.dataset.id); }
@@ -355,11 +377,19 @@
     if (quietStop) { quietStop = false; return; }
     if (send_) {
       const reader = new FileReader();
-      reader.onload = () => {
+      reader.onload = async () => {
         const audio = String(reader.result).split(',')[1];
         const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
         add({ id, mine: true, orig: '🎤 …', tr: '…' });
-        send({ kind: 'say-audio', id, audio, mime: recordType, lang: myLang });
+        // Fast path: the server recognizes and translates. MP4 (iPhone) and errors go the old way, through the app.
+        const r = recordType.includes('mp4') ? null : await viaServer({ audio, mime: recordType });
+        if (r && typeof r.text === 'string') {
+          if (!r.text) { fill(id, '…?', ''); return; }
+          fill(id, r.text, r.translated);
+          send({ kind: 'say', id, text: r.text, lang: myLang, translated: r.translated });
+        } else {
+          send({ kind: 'say-audio', id, audio, mime: recordType, lang: myLang });
+        }
       };
       reader.readAsDataURL(blob);
     }
@@ -382,10 +412,12 @@
     cover.remove();
   });
 
-  function say(text) {
+  async function say(text) {
     const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
     add({ id, mine: true, orig: text, tr: '…' });
-    send({ kind: 'say', id, text, lang: myLang });
+    const r = await viaServer({ text });
+    if (r && r.translated) { fill(id, null, r.translated); send({ kind: 'say', id, text, lang: myLang, translated: r.translated }); }
+    else send({ kind: 'say', id, text, lang: myLang });
   }
 
   $('typeForm').addEventListener('submit', (e) => {
